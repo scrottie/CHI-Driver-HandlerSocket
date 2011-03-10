@@ -109,11 +109,15 @@ enough time that a single DBI handle might time out, etc.
 
 =item 0.9
 
+C<t/00load.t> still referenced L<CHI::Handler::DBI> and would fail if it you didn't have it installed.  Fixed.
+
 Tests will fail with a message about no tests run unless you run the install manuaully and give it valid DB login info.
+Todo:  insert a dummy C<ok()> in there.
 
 Should have been specifying CHARSET=ASCII in the create statement to avoid L<http://bugs.mysql.com/bug.php?id=4541>, where utf-8 characters count triple or quadruple or whatever.
+Fixed, dubiously.
 
-
+Huh, turns out that I was developing against L<CHI> 0.36.  Running tests with 0.42 shows me 31 failing tests.
 
 
 =head1 Authors
