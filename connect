@@ -1,2 +1,0 @@
-lib/CHI/Driver/DBI/t/CHIDriverTests/Base.pm:26:        return DBI->connect(
-lib/CHI/Driver/DBI.pm:42: my $cache = CHI->new( driver => 'DBI', dbh => DBI->connect(...) );

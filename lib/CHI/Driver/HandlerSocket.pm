@@ -176,11 +176,9 @@ sub BUILD {
 
     # warn "host: @{[ $self->host ]} port: @{[ $self->read_port ]} database_name: $database_name table: $table read_index: @{[ $self->read_index ]} write_index: @{[ $self->write_index ]}";
 
-    # if ( $args->{create_table} ) {
-        $dbh->do( qq{
-            CREATE TABLE IF NOT EXISTS $table ( `key` VARCHAR( 600 ), `value` TEXT, PRIMARY KEY ( `key` ) )
-        } ) or croak $dbh->errstr;
-    # }
+    $dbh->do( qq{
+        CREATE TABLE IF NOT EXISTS $table ( `key` VARCHAR( 600 ), `value` BLOB, PRIMARY KEY ( `key` ) ) CHARSET=ASCII
+    } ) or croak $dbh->errstr;
 
     # from https://github.com/ahiguti/HandlerSocket-Plugin-for-MySQL/blob/master/docs-en/perl-client.en.txt:
 
