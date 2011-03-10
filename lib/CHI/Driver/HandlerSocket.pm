@@ -105,6 +105,17 @@ handle, e.g.
 The last two options are valuable if your CHI object is going to live for
 enough time that a single DBI handle might time out, etc.
 
+=head1 BUGS
+
+=item 0.9
+
+Tests will fail with a message about no tests run unless you run the install manuaully and give it valid DB login info.
+
+Should have been specifying CHARSET=ASCII in the create statement to avoid L<http://bugs.mysql.com/bug.php?id=4541>, where utf-8 characters count triple or quadruple or whatever.
+
+
+
+
 =head1 Authors
 
 L<CHI::Driver::HandlerSocket> by Scott Walters (scott@slowass.net) for Plain Black Corp, L<http://plainblack.com>.
