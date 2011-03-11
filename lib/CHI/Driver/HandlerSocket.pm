@@ -24,15 +24,8 @@ CHI::Driver::HandlerSocket - Use DBI for cache storage, but access it using the 
  use CHI;
 
  # Supply a DBI handle
- #
+
  my $cache = CHI->new( driver => 'HandlerSocket', dbh => DBI->connect(...) );
-
- # or a DBIx::Connector
- my $cache = CHI->new( driver => 'HandlerSocket', dbh => DBIx::Connector->new(...) );
-
- # or code that generates a DBI handle
- #
- my $cache = CHI->new( driver => 'HandlerSocket', dbh => sub { ...; return $dbh } );
 
 =head1 DESCRIPTION
 
@@ -93,12 +86,16 @@ a regular DBI handle
 
 a L<DBIx::Connector|DBIx::Connector> object
 
+XXXX doesn't work
+
 =item *
 
 a code reference that will be called each time and is expected to return a DBI
 handle, e.g.
 
     sub { My::Rose::DB->new->dbh }
+
+XXXX doesn't work
 
 =back
 
@@ -139,22 +136,35 @@ the same terms as Perl itself.
 
 =cut
 
-my $type = __PACKAGE__;
+# I cargo culted this wrong and now it's barfing all over
+#
+#my $type = __PACKAGE__;
+#
+#subtype "$type.DBIHandleGenerator" => as 'CodeRef';
+#subtype "$type.DBIXConnector"      => as 'DBIx::Connector';
+#subtype "$type.DBIHandle"          => as 'DBI::db';
+#
+#coerce "$type.DBIHandleGenerator" => from "$type.DBIXConnector" => via {
+#    my $dbixconn = $_;
+#    sub { $dbixconn->dbh }
+#};
+#coerce "$type.DBIHandleGenerator" => from "$type.DBIHandle" => via {
+#    my $dbh = $_;
+#    sub { $dbh }
+#};
+#
+# has 'dbh' => ( is => 'ro', isa => "$type.DBIHandleGenerator", coerce => 1 );
 
-subtype "$type.DBIHandleGenerator" => as 'CodeRef';
-subtype "$type.DBIXConnector"      => as 'DBIx::Connector';
-subtype "$type.DBIHandle"          => as 'DBI::db';
+has 'dbh' => ( is => 'rw', ); #  isa => 'DBI::db',
 
-coerce "$type.DBIHandleGenerator" => from "$type.DBIXConnector" => via {
-    my $dbixconn = $_;
-    sub { $dbixconn->dbh }
-};
-coerce "$type.DBIHandleGenerator" => from "$type.DBIHandle" => via {
-    my $dbh = $_;
-    sub { $dbh }
-};
-
-has 'dbh' => ( is => 'ro', isa => "$type.DBIHandleGenerator", coerce => 1 );
+sub get_dbh {
+    my $self = shift;
+    my $dbh = $self->dbh or die "no dbh!";
+    return $dbh->dbh if eval { $dbh->ISA('DBIx::Connector'); };
+    return $dbh->() if eval { ref $dbh eq 'CODE' };  # tell me again what's wrong with UNIVERSAL::ISA.
+    # warn "dbh isn't a DBI::db; it's a " . ref $dbh unless eval { $dbh->ISA('DBI::db'); }; # "dbh isn't a DBI::db; it's a DBI::db"
+    return $dbh;
+}
 
 has 'table_prefix' => ( is => 'rw', isa => 'Str', default => 'chi_', );
 
@@ -172,12 +182,14 @@ has 'read_hs' => ( is => 'rw', isa => 'Net::HandlerSocket', );
 
 has 'write_hs' => ( is => 'rw', isa => 'Net::HandlerSocket', );
 
+has 'mysql_thread_stack' => ( is => 'rw', isa => 'Num', ); # HandlerSocket uses the stack to buffer writes; remember how large the stack is
+
 __PACKAGE__->meta->make_immutable;
 
 sub BUILD {
     my ( $self, $args ) = @_;
     
-    my $dbh = $self->dbh->();
+    my $dbh = $self->get_dbh;
 
     my $table   = $self->_table; # don't quote it
     
@@ -189,7 +201,28 @@ sub BUILD {
         $row[0];
     };
 
-    # warn "host: @{[ $self->host ]} port: @{[ $self->read_port ]} database_name: $database_name table: $table read_index: @{[ $self->read_index ]} write_index: @{[ $self->write_index ]}";
+    # HandlerSocket uses the stack to buffer writes; remember how large the stack is
+
+    $self->mysql_thread_stack(do {
+        my $sth = $dbh->prepare( qq{ SHOW global variables WHERE Variable_name = 'thread_stack' } ) or die $dbh->errstr;
+        $sth->execute or die $sth->errstr;
+        my @row = $sth->fetchrow_array || do { 
+            # every time you use a magic number in code, a devil gets his horns; seriously though, this is this 
+            # particular MySQL releases default thread stack size
+            warn "couldn't figure out the thread_stack size; oh well, guessing"; 
+            (131072); 
+        }; 
+        $sth->finish;
+        # 5824 is the amount of data my MySQL version/install said had already been used of the stack before the 
+        # unaccomodatable request came in; 2 is a fudge factor
+        # if this is less than 0 for some reason, then all writes will go to DBI, which is probably necessary in that case
+        $row[0] - 5824 * 2;  
+    });
+
+    # warn "host: @{[ $self->host ]} port: @{[ $self->read_port ]} database_name: $database_name table: $table read_index: @{[ $self->read_index ]} write_index: @{[ $self->write_index ]} thread_stack: @{[ $self->mysql_thread_stack ]}";
+
+    #    CREATE TABLE IF NOT EXISTS $table ( `key` VARCHAR( 600 ), `value` BLOB, PRIMARY KEY ( `key` ) ) CHARSET=ASCII # fails 30 tests right now
+    #    CREATE TABLE IF NOT EXISTS $table ( `key` VARCHAR( 300 ), `value` TEXT, PRIMARY KEY ( `key` ) ) CHARSET=utf8 # fails 220 tests
 
     $dbh->do( qq{
         CREATE TABLE IF NOT EXISTS $table ( `key` VARCHAR( 600 ), `value` BLOB, PRIMARY KEY ( `key` ) ) CHARSET=ASCII
@@ -246,11 +279,13 @@ sub fetch {
 }   
 
     
-sub store_xx {
+sub store_dbi {
     my ( $self, $key, $data, ) = @_;
 
-    my $dbh = $self->dbh->();
+    my $dbh = $self->get_dbh;
     my $table   = $dbh->quote_identifier( $self->_table );
+
+    # XXX - should actually just prepare this as once or as needed, or maybe that's what prepare_cached does...?  wait, MySQL doesn't cache parsed SQL anyway like Postgres does so maybe there's no point.
 
     my $sth = $dbh->prepare_cached( qq{
           INSERT INTO $table
@@ -269,6 +304,13 @@ sub store {
 
     my $index = $self->write_index;
     my $hs = $self->write_hs;
+
+    # if HandlerSocket doesn't have enough stack to buffer the write, kick back to DBI
+
+    if( length $data > $self->mysql_thread_stack ) {
+warn "debug: punted back to store_dbi";
+        return $self->store_dbi( $key, $data );
+    }
 
     # from https://github.com/ahiguti/HandlerSocket-Plugin-for-MySQL/blob/master/docs-en/perl-client.en.txt:
 
@@ -295,7 +337,7 @@ sub remove {
     my ( $self, $key, ) = @_;
 
     my $index = $self->write_index;
-    my $dbh = $self->dbh->();
+    my $dbh = $self->get_dbh;
     my $hs = $self->write_hs;
 
     my $res = $hs->execute_single($index, '=', [ $key ], 1, 0, 'D');
@@ -307,7 +349,7 @@ sub remove {
 sub clear { 
     my $self = shift;
 
-    my $dbh = $self->dbh->();
+    my $dbh = $self->get_dbh;
     my $table   = $dbh->quote_identifier( $self->_table );
             
     my $sth = $dbh->prepare_cached( qq{ DELETE FROM $table } ) or croak $dbh->errstr;
@@ -320,7 +362,7 @@ sub clear {
 sub get_keys {
     my ( $self, ) = @_;
 
-    my $dbh = $self->dbh->();
+    my $dbh = $self->get_dbh;
     my $table   = $dbh->quote_identifier( $self->_table );
     
     my $sth = $dbh->prepare_cached( "SELECT DISTINCT `key` FROM $table" ) or croak $dbh->errstr;
