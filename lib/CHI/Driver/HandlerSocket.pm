@@ -13,7 +13,7 @@ use Carp 'croak';
 extends 'CHI::Driver';
 
 use 5.006;
-our $VERSION = '0.99';
+our $VERSION = '0.991';
 
 =head1 NAME
 
@@ -26,6 +26,8 @@ CHI::Driver::HandlerSocket - Use DBI for cache storage, but access it using the 
  # Supply a DBI handle
 
  my $cache = CHI->new( driver => 'HandlerSocket', dbh => DBI->connect(...) );
+
+B<ATTENTION>:  This module inherits tests from L<CHI> but does not pass all of L<CHI>'s tests.  It will not automatically install with L<cpanm> or L<cpan> because of this.  Also, it won't pass all tests without database login information and L<cpanm> skips the interactive prompts.  You need to install this manually for now, I'm afraid.
 
 =head1 DESCRIPTION
 
@@ -135,25 +137,6 @@ This program is free software; you can redistribute it and/or modify it under
 the same terms as Perl itself.
 
 =cut
-
-# I cargo culted this wrong and now it's barfing all over
-#
-#my $type = __PACKAGE__;
-#
-#subtype "$type.DBIHandleGenerator" => as 'CodeRef';
-#subtype "$type.DBIXConnector"      => as 'DBIx::Connector';
-#subtype "$type.DBIHandle"          => as 'DBI::db';
-#
-#coerce "$type.DBIHandleGenerator" => from "$type.DBIXConnector" => via {
-#    my $dbixconn = $_;
-#    sub { $dbixconn->dbh }
-#};
-#coerce "$type.DBIHandleGenerator" => from "$type.DBIHandle" => via {
-#    my $dbh = $_;
-#    sub { $dbh }
-#};
-#
-# has 'dbh' => ( is => 'ro', isa => "$type.DBIHandleGenerator", coerce => 1 );
 
 has 'dbh' => ( is => 'rw', ); #  isa => 'DBI::db',
 
