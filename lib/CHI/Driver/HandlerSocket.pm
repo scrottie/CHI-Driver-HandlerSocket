@@ -13,7 +13,7 @@ use Carp 'croak';
 extends 'CHI::Driver';
 
 use 5.006;
-our $VERSION = '0.991';
+our $VERSION = '0.992';
 
 =head1 NAME
 
@@ -27,7 +27,9 @@ CHI::Driver::HandlerSocket - Use DBI for cache storage, but access it using the 
 
  my $cache = CHI->new( driver => 'HandlerSocket', dbh => DBI->connect(...) );
 
-B<ATTENTION>:  This module inherits tests from L<CHI> but does not pass all of L<CHI>'s tests.  It will not automatically install with L<cpanm> or L<cpan> because of this.  Also, it won't pass all tests without database login information and L<cpanm> skips the interactive prompts.  You need to install this manually for now, I'm afraid.
+B<ATTENTION>:  This module inherits tests from L<CHI> but I<may> not pass all of L<CHI>'s tests.  
+Also, no real functional tests will run unless installed manually as L<cpanm> surpresses prompts for database login information 
+for a MySQL database to test against.
 
 =head1 DESCRIPTION
 
@@ -108,15 +110,19 @@ enough time that a single DBI handle might time out, etc.
 
 =item 0.9
 
-C<t/00load.t> still referenced L<CHI::Handler::DBI> and would fail if it you didn't have it installed.  Fixed.
+C<t/00load.t> still referenced L<CHI::Handler::DBI> and would fail if it you didn't have it installed.  Fixed in 0.991.
 
 Tests will fail with a message about no tests run unless you run the install manuaully and give it valid DB login info.
-Todo:  insert a dummy C<ok()> in there.
+Inserted a dummy C<ok()> in there in 0.991.
 
 Should have been specifying CHARSET=ASCII in the create statement to avoid L<http://bugs.mysql.com/bug.php?id=4541>, where utf-8 characters count triple or quadruple or whatever.
-Fixed, dubiously.
+Fixed, dubiously, in 0.991.
 
 Huh, turns out that I was developing against L<CHI> 0.36.  Running tests with 0.42 shows me 31 failing tests.
+
+=item 0.991
+
+The database table name was computed from the argument for C<namespace>, but no sanitizing is done on it.  Fixed in 0.992.
 
 
 =head1 Authors
@@ -232,7 +238,9 @@ sub BUILD {
  
 sub _table {
     my $self = shift;
-    return $self->table_prefix() . $self->namespace();
+    my $namespace = $self->namespace;
+    $namespace =~ s{([^a-z0-9_])}{sprintf "__%2x", ord $1}gei;   # not completely safe; and this wasn't intended as security, just coping with '.' in the namespace
+    return $self->table_prefix() . $namespace;
 }
 
 sub fetch {
