@@ -148,7 +148,7 @@ has 'dbh' => ( is => 'rw', ); #  isa => 'DBI::db',
 
 sub get_dbh {
     my $self = shift;
-    my $dbh = $self->dbh or die "no dbh!";
+    my $dbh = $self->dbh or croak "no dbh!";
     return $dbh->dbh if eval { $dbh->ISA('DBIx::Connector'); };
     return $dbh->() if eval { ref $dbh eq 'CODE' };  # tell me again what's wrong with UNIVERSAL::ISA.
     # warn "dbh isn't a DBI::db; it's a " . ref $dbh unless eval { $dbh->ISA('DBI::db'); }; # "dbh isn't a DBI::db; it's a DBI::db"
@@ -183,9 +183,9 @@ sub BUILD {
     my $table   = $self->_table; # don't quote it
     
     my $database_name = do { 
-        my $sth = $dbh->prepare( qq{ SELECT database() AS dbname } ) or die $dbh->errstr;
-        $sth->execute or die $sth->errstr;
-        my @row = $sth->fetchrow_array or die "couldn't figure out the name of the database";
+        my $sth = $dbh->prepare( qq{ SELECT database() AS dbname } ) or croak $dbh->errstr;
+        $sth->execute or croak $sth->errstr;
+        my @row = $sth->fetchrow_array or croak "couldn't figure out the name of the database";
         $sth->finish;
         $row[0];
     };
@@ -193,8 +193,8 @@ sub BUILD {
     # HandlerSocket uses the stack to buffer writes; remember how large the stack is
 
     $self->mysql_thread_stack(do {
-        my $sth = $dbh->prepare( qq{ SHOW global variables WHERE Variable_name = 'thread_stack' } ) or die $dbh->errstr;
-        $sth->execute or die $sth->errstr;
+        my $sth = $dbh->prepare( qq{ SHOW global variables WHERE Variable_name = 'thread_stack' } ) or croak $dbh->errstr;
+        $sth->execute or croak $sth->errstr;
         my @row = $sth->fetchrow_array || do { 
             # every time you use a magic number in code, a devil gets his horns; seriously though, this is this 
             # particular MySQL releases default thread stack size
@@ -225,12 +225,12 @@ sub BUILD {
     # index to open. If 'PRIMARY' is specified, the primary index is
     # open. The 5th argument is a comma-separated list of column names.
 
-    my $read_hs = Net::HandlerSocket->new({ host => $self->host, port => $self->read_port, }) or die;
-    $read_hs->open_index($self->read_index, $database_name, $table, 'PRIMARY', 'value') and die $read_hs->get_error;
+    my $read_hs = Net::HandlerSocket->new({ host => $self->host, port => $self->read_port, }) or croak;
+    $read_hs->open_index($self->read_index, $database_name, $table, 'PRIMARY', 'value') and croak $read_hs->get_error;
     $self->read_hs($read_hs);
 
     my $write_hs = Net::HandlerSocket->new({ host => $self->host, port => $self->write_port, });
-    $write_hs->open_index($self->write_index, $database_name, $table, 'PRIMARY', 'key,value') and die $write_hs->get_error;
+    $write_hs->open_index($self->write_index, $database_name, $table, 'PRIMARY', 'key,value') and croak $write_hs->get_error;
     $self->write_hs($write_hs);
 
     return;
@@ -241,6 +241,23 @@ sub _table {
     my $namespace = $self->namespace;
     $namespace =~ s{([^a-z0-9_])}{sprintf "__%2x", ord $1}gei;   # not completely safe; and this wasn't intended as security, just coping with '.' in the namespace
     return $self->table_prefix() . $namespace;
+}
+
+sub fetch_dbi {
+    my ( $self, $key ) = @_;
+
+    my $dbh = $self->get_dbh;
+    my $table   = $dbh->quote_identifier( $self->_table );
+
+    my $sth = $dbh->prepare_cached( qq{
+           SELECT value FROM $table
+           WHERE key = ?
+    } );
+    $sth->execute( $key, );
+    (my $data) = $sth->fetchrow_array() or croak $sth->errstr;
+    $sth->finish;
+
+    return $data;
 }
 
 sub fetch {
@@ -264,11 +281,14 @@ sub fetch {
     # corresponding open_index call.
 
     my $res = $hs->execute_single($index, '=', [ $key ], 1, 0);
-    my $status = shift @$res;  $status and die $hs->get_error;
-    return $res->[0];
+    my $status = shift @$res;  $status and croak $hs->get_error;
+    my $data = $res->[0];
+    if( defined $data and length $data >= $self->mysql_thread_stack ) {
+        return $self->fetch_dbi( $key );
+    }
+    return $data;
 
 }   
-
     
 sub store_dbi {
     my ( $self, $key, $data, ) = @_;
@@ -317,7 +337,7 @@ warn "debug: punted back to store_dbi";
         [ $index, '+', [ $key, $data ] ],
     ] );
     for my $res (@$rarr) {
-      die $hs->get_error() if $res->[0] != 0;
+      croak $hs->get_error() if $res->[0] != 0;
       # results in shift(@$res);
     }
 
@@ -332,9 +352,25 @@ sub remove {
     my $hs = $self->write_hs;
 
     my $res = $hs->execute_single($index, '=', [ $key ], 1, 0, 'D');
-    my $status = shift @$res;  $status and die $hs->get_error;
+    my $status = shift @$res;  $status and croak $hs->get_error;
 
     return;
+}
+
+sub deleteChunk {
+
+    # non-standard extension; consider this method private.  this is kind of wonky; delete all keys that start with a certain prefix.
+
+    my ( $self, $key, ) = @_;
+
+    my $dbh = $self->get_dbh;
+    my $table   = $dbh->quote_identifier( $self->_table );
+
+    my $sth = $dbh->prepare_cached( qq{ DELETE FROM $table WHERE `key` LIKE CONCAT(?, '\%') } ) or croak $dbh->errstr;
+    my $num = $sth->execute( $key ) or croak $sth->errstr;
+    $sth->finish();
+    
+    return $num;
 }
 
 sub clear { 
@@ -347,7 +383,7 @@ sub clear {
     $sth->execute() or croak $sth->errstr;
     $sth->finish();
     
-    return;
+    return 1;
 }
 
 sub get_keys {
@@ -363,6 +399,8 @@ sub get_keys {
 
     return @{$results};
 }
+
+sub cookie { warn "cookie!\n"; }
 
 sub get_namespaces { croak 'not supported' }
     
