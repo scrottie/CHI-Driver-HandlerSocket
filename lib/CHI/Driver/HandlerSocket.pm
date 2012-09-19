@@ -319,7 +319,6 @@ sub store {
     # if HandlerSocket doesn't have enough stack to buffer the write, kick back to DBI
 
     if( length $data > $self->mysql_thread_stack ) {
-warn "debug: punted back to store_dbi";
         return $self->store_dbi( $key, $data );
     }
 
@@ -366,11 +365,24 @@ sub deleteChunk {
     my $dbh = $self->get_dbh;
     my $table   = $dbh->quote_identifier( $self->_table );
 
-    my $sth = $dbh->prepare_cached( qq{ DELETE FROM $table WHERE `key` LIKE CONCAT(?, '\%') } ) or croak $dbh->errstr;
-    my $num = $sth->execute( $key ) or croak $sth->errstr;
-    $sth->finish();
-    
-    return $num;
+    my @keys_to_delete;
+    my $sth = $dbh->prepare( qq{ select `key` FROM $table WHERE `key` LIKE CONCAT(?, '\%') } ) or croak $dbh->errstr;
+    $sth->execute( $key ) or croak $sth->errstr;
+    while( my $row = $sth->fetchrow_hashref ) {
+        push @keys_to_delete, $row->{key};
+    }
+    $sth->finish;
+
+    # @keys_to_delete = sort { $a cmp $b } @keys_to_delete;
+    # warn "deleteChunk HS came up with these keys to delete: @keys_to_delete";
+
+    for my $k (@keys_to_delete) {
+        # can't just do 'delete from $table where' because mix-ins might wrap delete(), so we have to actually use the remove() method
+        $self->remove( $k );
+    }
+
+    return scalar(@keys_to_delete) || '0e0';
+
 }
 
 sub clear { 
@@ -400,7 +412,21 @@ sub get_keys {
     return @{$results};
 }
 
-sub cookie { warn "cookie!\n"; }
+sub get_size {
+
+    # if 'is_size_aware' is specified to the constructor, then a mix-in will be pulled in that replaces this method.  either should work but quite likely, this lone method doesn't implement all of the interface.
+
+    my $self = shift; 
+
+    my $dbh = $self->get_dbh;
+    my $table   = $dbh->quote_identifier( $self->_table );
+
+    my $sth = $dbh->prepare_cached( "select sum(length(value)) from $table") or croak $dbh->errstr;
+    $sth->execute() or croak $sth->errstr;
+    my $result = $sth->fetchrow_arrayref();
+    $sth->finish;
+    return $result->[0];
+}
 
 sub get_namespaces { croak 'not supported' }
     
