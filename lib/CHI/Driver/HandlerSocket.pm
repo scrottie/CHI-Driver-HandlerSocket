@@ -13,7 +13,7 @@ use Carp 'croak';
 extends 'CHI::Driver';
 
 use 5.006;
-our $VERSION = '0.992';
+our $VERSION = '0.993';
 
 =head1 NAME
 
@@ -163,11 +163,17 @@ has 'read_port' => ( is => 'ro', default => 9998, );
 
 has 'write_port' => ( is => 'ro', default => 9999, );
 
-has 'read_index' => ( is => 'ro', default => 1, );
+# has 'read_index' => ( is => 'ro', default => 1, );
+#
+#has 'write_index' => ( is => 'ro', default => 1, );
 
-has 'write_index' => ( is => 'ro', default => 1, );
+use constant read_index => 1;
+use constant keys_index => 2;
+use constant write_index => 1; # different HS connection
 
 has 'read_hs' => ( is => 'rw', isa => 'Net::HandlerSocket', );
+
+has 'keys_hs' => ( is => 'rw', isa => 'Net::HandlerSocket', );
 
 has 'write_hs' => ( is => 'rw', isa => 'Net::HandlerSocket', );
 
@@ -208,13 +214,13 @@ sub BUILD {
         $row[0] - 5824 * 2;  
     });
 
-    # warn "host: @{[ $self->host ]} port: @{[ $self->read_port ]} database_name: $database_name table: $table read_index: @{[ $self->read_index ]} write_index: @{[ $self->write_index ]} thread_stack: @{[ $self->mysql_thread_stack ]}";
+    # warn "host: @{[ $self->host ]} port: @{[ $self->read_port ]} database_name: $database_name table: $table read_index: @{[ read_index ]} write_index: @{[ $self->write_index ]} thread_stack: @{[ $self->mysql_thread_stack ]}";
 
     #    CREATE TABLE IF NOT EXISTS $table ( `key` VARCHAR( 600 ), `value` BLOB, PRIMARY KEY ( `key` ) ) CHARSET=ASCII # fails 30 tests right now
     #    CREATE TABLE IF NOT EXISTS $table ( `key` VARCHAR( 300 ), `value` TEXT, PRIMARY KEY ( `key` ) ) CHARSET=utf8 # fails 220 tests
 
     $dbh->do( qq{
-        CREATE TABLE IF NOT EXISTS $table ( `key` VARCHAR( 600 ), `value` BLOB, PRIMARY KEY ( `key` ) ) CHARSET=ASCII
+        CREATE TABLE IF NOT EXISTS $table ( `key` VARBINARY( 600 ), `value` BLOB, PRIMARY KEY ( `key` ) ) ENGINE=InnoDB
     } ) or croak $dbh->errstr;
 
     # from https://github.com/ahiguti/HandlerSocket-Plugin-for-MySQL/blob/master/docs-en/perl-client.en.txt:
@@ -225,12 +231,20 @@ sub BUILD {
     # index to open. If 'PRIMARY' is specified, the primary index is
     # open. The 5th argument is a comma-separated list of column names.
 
+    # Read:
+
     my $read_hs = Net::HandlerSocket->new({ host => $self->host, port => $self->read_port, }) or croak;
-    $read_hs->open_index($self->read_index, $database_name, $table, 'PRIMARY', 'value') and croak $read_hs->get_error;
+    $read_hs->open_index(read_index, $database_name, $table, 'PRIMARY', 'value') and croak $read_hs->get_error; # used to read values for a given key
     $self->read_hs($read_hs);
 
+    $read_hs->open_index(keys_index, $database_name, $table, 'PRIMARY', 'key') and croak $read_hs->get_error; # used to read all keys
+    $self->keys_hs($read_hs);
+
+    # Write:
+
     my $write_hs = Net::HandlerSocket->new({ host => $self->host, port => $self->write_port, });
-    $write_hs->open_index($self->write_index, $database_name, $table, 'PRIMARY', 'key,value') and croak $write_hs->get_error;
+    # $write_hs->open_index($self->write_index, $database_name, $table, 'PRIMARY', 'key,value') and croak $write_hs->get_error;
+    $write_hs->open_index(write_index, $database_name, $table, 'PRIMARY', 'key,value') and croak $write_hs->get_error;
     $self->write_hs($write_hs);
 
     return;
@@ -263,7 +277,6 @@ sub fetch_dbi {
 sub fetch {
     my ( $self, $key, ) = @_;
 
-    my $index = $self->read_index;
     my $hs = $self->read_hs;
 
     # from https://github.com/ahiguti/HandlerSocket-Plugin-for-MySQL/blob/master/docs-en/perl-client.en.txt:
@@ -280,7 +293,7 @@ sub fetch {
     # to be retrieved are specified by the 5th argument for the
     # corresponding open_index call.
 
-    my $res = $hs->execute_single($index, '=', [ $key ], 1, 0);
+    my $res = $hs->execute_single(keys_index, '=', [ $key ], 1, 0);
     my $status = shift @$res;  $status and croak $hs->get_error;
     my $data = $res->[0];
     if( defined $data and length $data >= $self->mysql_thread_stack ) {
@@ -313,7 +326,6 @@ sub store_dbi {
 sub store {
     my ( $self, $key, $data, ) = @_;
 
-    my $index = $self->write_index;
     my $hs = $self->write_hs;
 
     # if HandlerSocket doesn't have enough stack to buffer the write, kick back to DBI
@@ -332,8 +344,8 @@ sub store {
     my $status;
 
     my $rarr = $hs->execute_multi( [
-        [ $index, '=', [ $key ], 1, 0, 'D' ],                   # gaaah
-        [ $index, '+', [ $key, $data ] ],
+        [ write_index, '=', [ $key ], 1, 0, 'D' ],                   # gaaah
+        [ write_index, '+', [ $key, $data ] ],
     ] );
     for my $res (@$rarr) {
       croak $hs->get_error() if $res->[0] != 0;
@@ -346,11 +358,10 @@ sub store {
 sub remove {
     my ( $self, $key, ) = @_;
 
-    my $index = $self->write_index;
     my $dbh = $self->get_dbh;
     my $hs = $self->write_hs;
 
-    my $res = $hs->execute_single($index, '=', [ $key ], 1, 0, 'D');
+    my $res = $hs->execute_single(write_index, '=', [ $key ], 1, 0, 'D');
     my $status = shift @$res;  $status and croak $hs->get_error;
 
     return;
@@ -401,15 +412,26 @@ sub clear {
 sub get_keys {
     my ( $self, ) = @_;
 
-    my $dbh = $self->get_dbh;
-    my $table   = $dbh->quote_identifier( $self->_table );
-    
-    my $sth = $dbh->prepare_cached( "SELECT DISTINCT `key` FROM $table" ) or croak $dbh->errstr;
-    $sth->execute() or croak $sth->errstr;
-    my $results = $sth->fetchall_arrayref( [0] );
-    $_ = $_->[0] for @{$results};
+    my $hs = $self->read_hs;
 
-    return @{$results};
+    my $res = $hs->execute_single(keys_index, '>', [ '0' ], 0, 0 );
+    my $status = shift @$res;  $status and die $hs->get_error;
+
+    die $hs->get_error() if $res->[0] != 0;
+    shift @$res;
+
+    return @$res;
+
+#    my $dbh = $self->get_dbh;
+#    my $table   = $dbh->quote_identifier( $self->_table );
+#    
+#    my $sth = $dbh->prepare_cached( "SELECT DISTINCT `key` FROM $table" ) or croak $dbh->errstr;
+#    $sth->execute() or croak $sth->errstr;
+#    my $results = $sth->fetchall_arrayref( [0] );
+#    $_ = $_->[0] for @{$results};
+#
+#    return @{$results};
+
 }
 
 sub get_size {

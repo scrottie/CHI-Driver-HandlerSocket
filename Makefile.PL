@@ -10,6 +10,9 @@ perl_version '5.006';
 build_requires 'Test::Class' => 0;
 build_requires 'Test::Most'  => 0;
 
+repository 'https://github.com/scrottie/CHI-Driver-HandlerSocket';
+bugtracker 'https://github.com/scrottie/CHI-Driver-HandlerSocket/issues';
+
 requires 'CHI' => '0.241';
 requires 'DBI' => '1.26';
 requires 'Net::HandlerSocket' => undef;

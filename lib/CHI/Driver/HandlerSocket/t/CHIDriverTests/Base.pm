@@ -33,13 +33,16 @@ sub dbh {
     };
 }
 
+sub host { 'localhost' };
+
 sub new_cache_options {
     my $self = shift;
 
     return (
         $self->SUPER::new_cache_options(),
         dbh          => $self->dbh,
-        create_table => 1
+        create_table => 1,
+        host	=> $self->host,
     );
 }
 
